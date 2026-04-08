@@ -1,41 +1,95 @@
+import cv2
+import mediapipe as mp
 import streamlit as st
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision
+from components.state import get_shared_state
 
-def ensure_auth_state():
-    if "logged_in" not in st.session_state:
-        st.session_state.logged_in = False
-    if "user_name" not in st.session_state:
-        st.session_state.user_name = "Ved"
+@st.cache_resource
+def load_detector():
+    opts = vision.PoseLandmarkerOptions(
+        base_options=mp_python.BaseOptions(model_asset_path="pose_landmarker_lite.task"),
+        running_mode=vision.RunningMode.IMAGE,
+    )
+    return vision.PoseLandmarker.create_from_options(opts)
 
-def render_auth_gate():
-    st.title("🧘 PostureSense")
-    st.subheader("Login / Sign Up")
-    tab1, tab2 = st.tabs(["Login", "Sign Up"])
 
-    with tab1:
-        with st.form("login_form"):
-            email = st.text_input("Email")
-            password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Login", use_container_width=True)
-            if submitted:
-                if email and password:
-                    st.session_state.logged_in = True
-                    st.session_state.user_name = email.split("@")[0].title()
-                    st.success("Login successful")
-                    st.rerun()
+class PostureProcessor:
+    def recv(self, frame):
+        import av
+
+        shared = get_shared_state()
+
+        img = frame.to_ndarray(format="bgr24")
+
+        # Mark camera as active
+        with shared["lock"]:
+            shared["camera_on"] = True
+
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+
+        detector = load_detector()
+
+        posture = "No Pose"
+        color = (120, 120, 120)
+        diff = 0.0
+
+        try:
+            result = detector.detect(mp_img)
+
+            if result.pose_landmarks:
+                lms = result.pose_landmarks[0]
+                h, w, _ = img.shape
+
+                left = lms[11]
+                right = lms[12]
+
+                diff = abs(left.y - right.y)
+
+                with shared["lock"]:
+                    bad_t = shared["bad_thresh"]
+                    warn_t = shared["warn_thresh"]
+
+                if diff > bad_t:
+                    posture, color = "Bad Posture", (0, 0, 255)
+                elif diff > warn_t:
+                    posture, color = "Slightly Bent", (0, 200, 255)
                 else:
-                    st.error("Enter email and password.")
+                    posture, color = "Good Posture", (0, 220, 100)
 
-    with tab2:
-        with st.form("signup_form"):
-            name = st.text_input("Full name")
-            email = st.text_input("Create email")
-            password = st.text_input("Create password", type="password")
-            submitted = st.form_submit_button("Create account", use_container_width=True)
-            if submitted:
-                if name and email and password:
-                    st.session_state.logged_in = True
-                    st.session_state.user_name = name
-                    st.success("Account created")
-                    st.rerun()
-                else:
-                    st.error("Fill all fields.")
+                # Draw points
+                for lm in lms:
+                    cv2.circle(img, (int(lm.x * w), int(lm.y * h)), 4, color, -1)
+
+                # Draw shoulder line
+                cv2.line(
+                    img,
+                    (int(left.x * w), int(left.y * h)),
+                    (int(right.x * w), int(right.y * h)),
+                    color,
+                    2,
+                )
+
+        except Exception:
+            posture = "No Pose"
+
+        # Overlay text
+        cv2.rectangle(img, (10, 10), (330, 60), (40, 40, 40), -1)
+        cv2.putText(
+            img,
+            posture,
+            (18, 45),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+        # Update shared state
+        with shared["lock"]:
+            shared["posture"] = posture
+            shared["last_diff"] = diff
+
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
