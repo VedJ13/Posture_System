@@ -1,0 +1,43 @@
+import streamlit as st
+from pathlib import Path
+from components.auth import ensure_auth_state, render_auth_gate
+from components.styles import apply_global_styles
+from components.state import init_app_state
+
+st.set_page_config(
+    page_title="PostureSense",
+    page_icon="🧘",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+apply_global_styles()
+ensure_auth_state()
+init_app_state()
+
+if not st.session_state.logged_in:
+    render_auth_gate()
+    st.stop()
+
+st.title("🧘 PostureSense")
+st.caption("Smart posture monitoring, session analytics, and corrective exercises.")
+
+c1, c2, c3 = st.columns(3)
+with c1:
+    st.info("Use the sidebar or page navigation to open Live Detection, Analysis, History, or Exercises.")
+with c2:
+    st.success(f"Logged in as: {st.session_state.user_name}")
+with c3:
+    if st.button("Logout", use_container_width=True):
+        st.session_state.logged_in = False
+        st.rerun()
+
+st.markdown("""
+### What’s improved
+- Stable shared state for posture detection
+- Working sidebar toggle
+- Live refresh without manual clicks
+- Functional sensitivity and alert cooldown controls
+- Session history and analysis pages
+- Dedicated exercises page
+""")
